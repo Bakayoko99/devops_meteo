@@ -1,0 +1,901 @@
+"""
+DRF ViewSets for weather data API endpoints.
+"""
+
+from drf_spectacular.utils import OpenApiParameter, extend_schema, extend_schema_view
+from rest_framework import status, viewsets
+from rest_framework.response import Response
+from rest_framework.views import APIView
+
+from weather.bootstrap_itn import ITNDependencyProvider
+from weather.bootstrap_itn_kpi import ITNKpiDependencyProvider
+from weather.bootstrap_records_graph import RecordsGraphDependencyProvider
+from weather.bootstrap_temperature_absolute_records import (
+    TemperatureAbsoluteRecordsDependencyProvider,
+)
+from weather.bootstrap_temperature_deviation import (
+    TemperatureDeviationDependencyProvider,
+    TemperatureDeviationOverviewDependencyProvider,
+)
+from weather.bootstrap_temperature_minmax import TemperatureMinMaxDependencyProvider
+from weather.bootstrap_temperature_records import TemperatureRecordsDependencyProvider
+from weather.services.national_indicator.kpi_use_case import get_national_indicator_kpi
+from weather.services.national_indicator.use_case import get_national_indicator
+from weather.services.records_graph.types import RecordsGraphRequest
+from weather.services.records_graph.use_case import (
+    get_absolute_records_graph,
+    get_records_graph,
+)
+from weather.services.temperature_deviation.use_case import (
+    get_temperature_deviation,
+    get_temperature_deviation_overview,
+)
+from weather.services.temperature_minmax.use_case import get_minmax_graph
+from weather.services.temperature_records.types import TemperatureRecordsRequest
+from weather.services.temperature_records.use_case import (
+    get_temperature_absolute_records,
+    get_temperature_records,
+)
+
+from .bootstrap_temperature_absolute_records_graph import (
+    TemperatureAbsoluteRecordsGraphDependencyProvider,
+)
+from .cache_control import CacheControlMixin
+from .filters import StationDeviationFilter, StationFilter, StationRecordsFilter
+from .models import StationDeviation, StationQualifieeHexagone, StationRecords
+from .serializers import (
+    AbsoluteRecordsGraphResponseSerializer,
+    ErrorSerializer,
+    NationalIndicatorKpiQuerySerializer,
+    NationalIndicatorKpiResponseSerializer,
+    NationalIndicatorQuerySerializer,
+    NationalIndicatorResponseSerializer,
+    RecordsGraphQuerySerializer,
+    RecordsGraphResponseSerializer,
+    StationDetailSerializer,
+    StationDeviationDetailSerializer,
+    StationDeviationSerializer,
+    StationRecordsDetailSerializer,
+    StationRecordsSerializer,
+    StationSerializer,
+    TemperatureDeviationGraphQuerySerializer,
+    TemperatureDeviationOverviewQuerySerializer,
+    TemperatureDeviationOverviewResponseSerializer,
+    TemperatureDeviationResponseSerializer,
+    TemperatureMinMaxGraphQuerySerializer,
+    TemperatureMinMaxGraphResponseSerializer,
+    TemperatureRecordsQuerySerializer,
+    TemperatureRecordsResponseSerializer,
+)
+
+
+class BaseStationViewSet(CacheControlMixin, viewsets.ReadOnlyModelViewSet):
+    """
+    ViewSet for weather station metadata.
+    Provides list and retrieve actions only (read-only).
+    """
+
+    search_fields = ["name", "departement", "station_code"]
+    ordering_fields = ["name", "departement", "alt"]
+    ordering = ["name"]
+    detail_serializer_class = None
+
+    # Métadonnées stations quasi immuables ; toutes les sous-classes héritent.
+    cache_profile = "long"
+    cache_long_s_maxage = 604_800  # 7 j
+    cache_long_max_age = 3_600
+
+    def get_serializer_class(self):
+        if self.action == "retrieve" and self.detail_serializer_class is not None:
+            return self.detail_serializer_class
+        return self.serializer_class
+
+
+@extend_schema_view(
+    list=extend_schema(
+        summary="Liste des stations",
+        description="Retourne la liste des stations meteorologiques.",
+        parameters=[
+            OpenApiParameter(
+                "first_temperature_year_max",
+                int,
+                OpenApiParameter.QUERY,
+                required=False,
+                description="Année maximale de `first_temperature_date` pour filtrer les stations.",
+            )
+        ],
+        tags=["Stations"],
+    ),
+    retrieve=extend_schema(
+        summary="Detail d'une station",
+        description="Retourne les details d'une station specifique.",
+        tags=["Stations"],
+    ),
+)
+class StationViewSet(BaseStationViewSet):
+    queryset = StationQualifieeHexagone.objects.all()
+    serializer_class = StationSerializer
+    detail_serializer_class = StationDetailSerializer
+    filterset_class = StationFilter
+
+
+@extend_schema_view(
+    list=extend_schema(
+        summary="Liste des stations pour records",
+        description=(
+            "Retourne la liste des stations meteorologiques eligibles aux records, "
+            "depuis la vue `v_station_records`."
+        ),
+        parameters=[
+            OpenApiParameter(
+                "first_temperature_year_max",
+                int,
+                OpenApiParameter.QUERY,
+                required=False,
+                description="Année maximale de `first_temperature_date` pour filtrer les stations.",
+            )
+        ],
+        tags=["Stations"],
+    ),
+    retrieve=extend_schema(
+        summary="Detail d'une station pour records",
+        description=(
+            "Retourne les details d'une station specifique depuis la vue "
+            "`v_station_records`."
+        ),
+        tags=["Stations"],
+    ),
+)
+class StationRecordsViewSet(BaseStationViewSet):
+    queryset = StationRecords.objects.all()
+    serializer_class = StationRecordsSerializer
+    detail_serializer_class = StationRecordsDetailSerializer
+    filterset_class = StationRecordsFilter
+
+
+@extend_schema_view(
+    list=extend_schema(
+        summary="Liste des stations pour deviation",
+        description=(
+            "Retourne la liste des stations meteorologiques eligibles aux calculs "
+            "de deviation, depuis la vue `v_station_deviation`."
+        ),
+        parameters=[
+            OpenApiParameter(
+                "first_temperature_year_max",
+                int,
+                OpenApiParameter.QUERY,
+                required=False,
+                description="Année maximale de `first_temperature_date` pour filtrer les stations.",
+            )
+        ],
+        tags=["Stations"],
+    ),
+    retrieve=extend_schema(
+        summary="Detail d'une station pour deviation",
+        description=(
+            "Retourne les details d'une station specifique depuis la vue "
+            "`v_station_deviation`."
+        ),
+        tags=["Stations"],
+    ),
+)
+class StationDeviationViewSet(BaseStationViewSet):
+    queryset = StationDeviation.objects.all()
+    serializer_class = StationDeviationSerializer
+    detail_serializer_class = StationDeviationDetailSerializer
+    filterset_class = StationDeviationFilter
+
+
+class NationalIndicatorAPIView(CacheControlMixin, APIView):
+    """
+    GET /api/v1/temperature/national-indicator
+    Implémentation mock (sans BDD), conforme au contrat OpenAPI.
+    """
+
+    authentication_classes = []
+    permission_classes = []
+    cache_profile = "by_date_end"
+
+    def get(self, request):
+        q = NationalIndicatorQuerySerializer(data=request.query_params)
+        if not q.is_valid():
+            return Response(
+                ErrorSerializer.build(
+                    code="INVALID_PARAMETER",
+                    message="Paramètre invalide ou manquant",
+                    details=q.errors,
+                ),
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        params = q.validated_data
+        deps = ITNDependencyProvider.get_dep()
+        data = get_national_indicator(
+            observed_data_source=deps.observed_data_source,
+            baseline_data_source=deps.baseline_data_source,
+            absolute_extremes_data_source=deps.absolute_extremes_data_source,
+            **params,
+        )
+        metadata = {
+            "date_start": params["date_start"],
+            "date_end": params["date_end"],
+            "baseline": "1991-2020",
+            "granularity": params["granularity"],
+            "slice_type": params.get("slice_type", "full"),
+        }
+
+        if "month_of_year" in params:
+            metadata["month_of_year"] = params["month_of_year"]
+
+        if "day_of_month" in params:
+            metadata["day_of_month"] = params["day_of_month"]
+
+        full_payload = {
+            "metadata": metadata,
+            "time_series": data["time_series"],
+        }
+        out = NationalIndicatorResponseSerializer(data=full_payload)
+        out.is_valid(raise_exception=True)
+
+        return Response(out.data, status=status.HTTP_200_OK)
+
+
+class TemperatureDeviationGraphAPIView(CacheControlMixin, APIView):
+    """
+    GET /api/v1/temperature/deviation/graph
+    Implémentation mock, alignée sur le pattern ITN.
+    """
+
+    authentication_classes = []
+    permission_classes = []
+    cache_profile = "by_date_end"
+
+    def get(self, request):
+        q = TemperatureDeviationGraphQuerySerializer(data=request.query_params)
+        if not q.is_valid():
+            return Response(
+                ErrorSerializer.build(
+                    code="INVALID_PARAMETER",
+                    message="Paramètre invalide ou manquant",
+                    details=q.errors,
+                ),
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        params = q.validated_data
+        ds = TemperatureDeviationDependencyProvider.get_dep()
+        try:
+            data = get_temperature_deviation(data_source=ds, **params)
+        except NotImplementedError as exc:
+            return Response(
+                ErrorSerializer.build(
+                    code="NOT_IMPLEMENTED",
+                    message=str(exc),
+                ),
+                status=status.HTTP_501_NOT_IMPLEMENTED,
+            )
+        metadata = {
+            "date_start": params["date_start"],
+            "date_end": params["date_end"],
+            "baseline": "1991-2020",
+            "granularity": params["granularity"],
+            "slice_type": params.get("slice_type", "full"),
+        }
+
+        if "month_of_year" in params:
+            metadata["month_of_year"] = params["month_of_year"]
+
+        if "day_of_month" in params:
+            metadata["day_of_month"] = params["day_of_month"]
+
+        full_payload = {
+            "metadata": metadata,
+            **data,
+        }
+
+        out = TemperatureDeviationResponseSerializer(data=full_payload)
+        out.is_valid(raise_exception=True)
+
+        return Response(out.data, status=status.HTTP_200_OK)
+
+
+class TemperatureRecordsAPIView(CacheControlMixin, APIView):
+    """
+    GET /api/v1/temperature/records
+    Retourne les records battus de température par station (liste progressive, pas uniquement le record absolu).
+    """
+
+    authentication_classes = []
+    permission_classes = []
+    # `mv_records_battus` est rafraîchie en continu (~6 min) : full cache pour les
+    # plages strictement historiques, TTL court sinon — et TTL court aussi quand
+    # `date_end` est absent (cas `period_type=all_time`).
+    cache_profile = "by_date_end"
+    cache_by_date_end_fallback = "short"
+
+    @extend_schema(
+        summary="Records de température",
+        description=(
+            "Liste les records de température par station avec support de la pagination et du tri.\n\n"
+            "L'endpoint permet de filtrer :\n"
+            "- le découpage temporel (`period_type`) : tous les temps, par mois ou par saison\n"
+            "- le type de record (`hot` ou `cold`)\n"
+            "- le tri des résultats (`sort`)\n\n"
+            "**Comportement de `period_type`**\n\n"
+            "- `all_time` (défaut) : liste des records battus progressifs toutes périodes confondues (le dernier par station correspond au record absolu actuel).\n"
+            "- `month` + `month=N` (1–12) : record du mois N uniquement.\n"
+            "- `month` sans `month` : records de **tous les mois** (une ligne par station et par mois).\n"
+            "- `season` + `season=<saison>` : record de la saison indiquée.\n"
+            "- `season` sans `season` : records de **toutes les saisons** (une ligne par station et par saison).\n\n"
+            "Exemples de requêtes :\n"
+            "- `period_type=all_time&type_records=hot&sort=-record_value`\n"
+            "- `period_type=month&month=7&type_records=hot&page=1&page_size=50`\n"
+            "- `period_type=month&type_records=hot` (tous les mois)\n"
+            "- `period_type=season&season=summer&type_records=cold&sort=station_name`\n"
+            "- `period_type=season&type_records=cold` (toutes les saisons)\n"
+            "- `period_type=all_time&type_records=hot&sort=-record_value,station_name`"
+        ),
+        parameters=[
+            OpenApiParameter(
+                name="sort",
+                type=str,
+                location="query",
+                required=False,
+                default="record_value",
+                description=(
+                    "Champ(s) de tri avec ordre. Supporte un ou plusieurs critères séparés par des virgules.\n\n"
+                    "Format : `[field]` pour ascendant, `[-field]` pour descendant.\n\n"
+                    "Champs disponibles :\n"
+                    "- `record_value` : valeur du record (défaut)\n"
+                    "- `station_name` : nom de la station\n"
+                    "- `record_date` : date du record\n"
+                    "- `department` : département\n\n"
+                    "Exemples :\n"
+                    "- `record_value` : tri par valeur croissante\n"
+                    "- `-record_value` : tri par valeur décroissante\n"
+                    "- `record_value,station_name` : tri par valeur puis nom croissant\n"
+                    "- `-record_value,station_name` : tri par valeur décroissante puis nom croissant"
+                ),
+            )
+        ],
+    )
+    def get(self, request):
+        q = TemperatureRecordsQuerySerializer(data=request.query_params)
+        if not q.is_valid():
+            return Response(
+                ErrorSerializer.build(
+                    code="INVALID_PARAMETER",
+                    message="Paramètre invalide ou manquant",
+                    details=q.errors,
+                ),
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        params = q.validated_data
+        ds = TemperatureRecordsDependencyProvider.get_dep()
+
+        req = TemperatureRecordsRequest(
+            period_type=params["period_type"],
+            type_records=params["type_records"],
+            month=params.get("month"),
+            season=params.get("season"),
+            date_start=params.get("date_start"),
+            date_end=params.get("date_end"),
+            territoire=params.get("territoire"),
+            territoire_id=params.get("territoire_id"),
+            classe_recente_min=params.get("classe_recente_min"),
+            classe_recente_max=params.get("classe_recente_max"),
+            date_de_creation_min=params.get("date_de_creation_min"),
+            date_de_creation_max=params.get("date_de_creation_max"),
+            date_de_fermeture_min=params.get("date_de_fermeture_min"),
+            date_de_fermeture_max=params.get("date_de_fermeture_max"),
+            page=params.get("page", 1),
+            page_size=params.get("page_size", 50),
+            sort=params.get("sort", "record_value"),
+        )
+
+        try:
+            result = get_temperature_records(
+                request=req,
+                data_source=ds,
+            )
+        except ValueError as exc:
+            return Response(
+                ErrorSerializer.build(
+                    code="INVALID_PARAMETER",
+                    message=str(exc),
+                ),
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        out = TemperatureRecordsResponseSerializer(
+            {
+                "pagination": {
+                    "total_count": result.pagination.total_count,
+                    "page": result.pagination.page,
+                    "page_size": result.pagination.page_size,
+                    "total_pages": result.pagination.total_pages,
+                },
+                "results": [
+                    {
+                        "station_id": e.station_id,
+                        "station_name": e.station_name,
+                        "department": e.department,
+                        "record_value": e.record_value,
+                        "record_date": e.record_date,
+                        "lat": e.lat,
+                        "lon": e.lon,
+                        "alt": e.alt,
+                        "classe_recente": e.classe_recente,
+                        "date_de_creation": e.date_de_creation,
+                        "date_de_fermeture": e.date_de_fermeture,
+                    }
+                    for e in result.entries
+                ],
+            }
+        )
+
+        return Response(out.data, status=status.HTTP_200_OK)
+
+
+class TemperatureAbsoluteRecordsAPIView(CacheControlMixin, APIView):
+    """
+    GET /api/v1/temperature/records/absolute
+    Retourne les records absolus de température par station.
+    """
+
+    authentication_classes = []
+    permission_classes = []
+    # Même source matview que les records battus (rafraîchie en continu).
+    cache_profile = "by_date_end"
+    cache_by_date_end_fallback = "short"
+
+    @extend_schema(
+        summary="Records de température",
+        description=(
+            "Liste les records de température par station avec support de la pagination et du tri.\n\n"
+            "L'endpoint permet de filtrer :\n"
+            "- le découpage temporel (`period_type`) : tous les temps, par mois ou par saison\n"
+            "- le type de record (`hot` ou `cold`)\n"
+            "- le tri des résultats (`sort`)\n\n"
+            "**Comportement de `period_type`**\n\n"
+            "- `all_time` (défaut) : liste des records absolus toutes périodes confondues.\n"
+            "- `month` + `month=N` (1–12) : record du mois N uniquement.\n"
+            "- `month` sans `month` : records de **tous les mois** (une ligne par station et par mois).\n"
+            "- `season` + `season=<saison>` : record de la saison indiquée.\n"
+            "- `season` sans `season` : records de **toutes les saisons** (une ligne par station et par saison).\n\n"
+            "Exemples de requêtes :\n"
+            "- `period_type=all_time&type_records=hot&sort=-record_value`\n"
+            "- `period_type=month&month=7&type_records=hot&page=1&page_size=50`\n"
+            "- `period_type=month&type_records=hot` (tous les mois)\n"
+            "- `period_type=season&season=summer&type_records=cold&sort=station_name`\n"
+            "- `period_type=season&type_records=cold` (toutes les saisons)\n"
+            "- `period_type=all_time&type_records=hot&sort=-record_value,station_name`"
+        ),
+        parameters=[
+            OpenApiParameter(
+                name="sort",
+                type=str,
+                location="query",
+                required=False,
+                default="record_value",
+                description=(
+                    "Champ(s) de tri avec ordre. Supporte un ou plusieurs critères séparés par des virgules.\n\n"
+                    "Format : `[field]` pour ascendant, `[-field]` pour descendant.\n\n"
+                    "Champs disponibles :\n"
+                    "- `record_value` : valeur du record (défaut)\n"
+                    "- `station_name` : nom de la station\n"
+                    "- `record_date` : date du record\n"
+                    "- `department` : département\n\n"
+                    "Exemples :\n"
+                    "- `record_value` : tri par valeur croissante\n"
+                    "- `-record_value` : tri par valeur décroissante\n"
+                    "- `record_value,station_name` : tri par valeur puis nom croissant\n"
+                    "- `-record_value,station_name` : tri par valeur décroissante puis nom croissant"
+                ),
+            )
+        ],
+    )
+    def get(self, request):
+        q = TemperatureRecordsQuerySerializer(data=request.query_params)
+        if not q.is_valid():
+            return Response(
+                ErrorSerializer.build(
+                    code="INVALID_PARAMETER",
+                    message="Paramètre invalide ou manquant",
+                    details=q.errors,
+                ),
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        params = q.validated_data
+        ds = TemperatureAbsoluteRecordsDependencyProvider.get_dep()
+
+        req = TemperatureRecordsRequest(
+            period_type=params["period_type"],
+            type_records=params["type_records"],
+            month=params.get("month"),
+            season=params.get("season"),
+            date_start=params.get("date_start"),
+            date_end=params.get("date_end"),
+            territoire=params.get("territoire"),
+            territoire_id=params.get("territoire_id"),
+            classe_recente_min=params.get("classe_recente_min"),
+            classe_recente_max=params.get("classe_recente_max"),
+            date_de_creation_min=params.get("date_de_creation_min"),
+            date_de_creation_max=params.get("date_de_creation_max"),
+            date_de_fermeture_min=params.get("date_de_fermeture_min"),
+            date_de_fermeture_max=params.get("date_de_fermeture_max"),
+            page=params.get("page", 1),
+            page_size=params.get("page_size", 50),
+            sort=params.get("sort", "record_value"),
+        )
+
+        try:
+            result = get_temperature_absolute_records(
+                request=req,
+                data_source=ds,
+            )
+        except ValueError as exc:
+            return Response(
+                ErrorSerializer.build(
+                    code="INVALID_PARAMETER",
+                    message=str(exc),
+                ),
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        out = TemperatureRecordsResponseSerializer(
+            {
+                "pagination": {
+                    "total_count": result.pagination.total_count,
+                    "page": result.pagination.page,
+                    "page_size": result.pagination.page_size,
+                    "total_pages": result.pagination.total_pages,
+                },
+                "results": [
+                    {
+                        "station_id": e.station_id,
+                        "station_name": e.station_name,
+                        "department": e.department,
+                        "record_value": e.record_value,
+                        "record_date": e.record_date,
+                        "lat": e.lat,
+                        "lon": e.lon,
+                        "alt": e.alt,
+                        "classe_recente": e.classe_recente,
+                        "date_de_creation": e.date_de_creation,
+                        "date_de_fermeture": e.date_de_fermeture,
+                    }
+                    for e in result.entries
+                ],
+            }
+        )
+
+        return Response(out.data, status=status.HTTP_200_OK)
+
+
+class TemperatureMinMaxGraphAPIView(CacheControlMixin, APIView):
+    """
+    GET /api/v1/temperature/extremes/graph
+    Retourne la moyenne de Tmin et Tmax sur une période,
+    selon la granularité et le territoire sélectionnés.
+    """
+
+    authentication_classes = []
+    permission_classes = []
+    cache_profile = "by_date_end"
+
+    @extend_schema(
+        parameters=[
+            OpenApiParameter("date_start", str, OpenApiParameter.QUERY, required=True),
+            OpenApiParameter("date_end", str, OpenApiParameter.QUERY, required=True),
+            OpenApiParameter(
+                "granularity",
+                str,
+                OpenApiParameter.QUERY,
+                required=True,
+                enum=["day", "month", "year"],
+            ),
+            OpenApiParameter(
+                "station_ids", str, OpenApiParameter.QUERY, required=False
+            ),
+            OpenApiParameter(
+                "departments", str, OpenApiParameter.QUERY, required=False
+            ),
+            OpenApiParameter("regions", str, OpenApiParameter.QUERY, required=False),
+        ]
+    )
+    def get(self, request):
+        q = TemperatureMinMaxGraphQuerySerializer(data=request.query_params)
+        if not q.is_valid():
+            return Response(
+                ErrorSerializer.build(
+                    code="INVALID_PARAMETER",
+                    message="Paramètre invalide ou manquant",
+                    details=q.errors,
+                ),
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        params = q.validated_data
+        ds = TemperatureMinMaxDependencyProvider.get_dep()
+        data = get_minmax_graph(data_source=ds, **params)
+
+        full_payload = {
+            "metadata": {
+                "date_start": params["date_start"],
+                "date_end": params["date_end"],
+                "granularity": params["granularity"],
+            },
+            **data,
+        }
+
+        out = TemperatureMinMaxGraphResponseSerializer(data=full_payload)
+        out.is_valid(raise_exception=True)
+
+        return Response(out.data, status=status.HTTP_200_OK)
+
+
+class TemperatureDeviationOverviewAPIView(CacheControlMixin, APIView):
+    """
+    GET /api/v1/temperature/deviation
+    """
+
+    authentication_classes = []
+    permission_classes = []
+    cache_profile = "by_date_end"
+
+    def get(self, request):
+        q = TemperatureDeviationOverviewQuerySerializer(data=request.query_params)
+        if not q.is_valid():
+            return Response(
+                ErrorSerializer.build(
+                    code="INVALID_PARAMETER",
+                    message="Paramètre invalide ou manquant",
+                    details=q.errors,
+                ),
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        params = q.validated_data
+
+        ds = TemperatureDeviationOverviewDependencyProvider.get_dep()
+
+        data = get_temperature_deviation_overview(
+            data_source=ds,
+            **params,
+        )
+
+        full_payload = {
+            "metadata": {
+                "date_start": params["date_start"],
+                "date_end": params["date_end"],
+                "baseline": "1991-2020",
+                "filters": {
+                    "station_search": params.get("station_search"),
+                    "station_ids": list(params.get("station_ids", ())),
+                    "temperature_mean_min": params.get("temperature_mean_min"),
+                    "temperature_mean_max": params.get("temperature_mean_max"),
+                    "deviation_min": params.get("deviation_min"),
+                    "deviation_max": params.get("deviation_max"),
+                    "alt_min": params.get("alt_min"),
+                    "alt_max": params.get("alt_max"),
+                    "classe_recente_min": params.get("classe_recente_min"),
+                    "classe_recente_max": params.get("classe_recente_max"),
+                    "date_de_creation_min": params.get("date_de_creation_min"),
+                    "date_de_creation_max": params.get("date_de_creation_max"),
+                    "date_de_fermeture_min": params.get("date_de_fermeture_min"),
+                    "date_de_fermeture_max": params.get("date_de_fermeture_max"),
+                    "departments": list(params.get("departments", ())),
+                    "regions": list(params.get("regions", ())),
+                },
+                "ordering": params.get("ordering", "-deviation"),
+            },
+            **data,
+        }
+
+        out = TemperatureDeviationOverviewResponseSerializer(data=full_payload)
+        out.is_valid(raise_exception=True)
+
+        return Response(out.data, status=status.HTTP_200_OK)
+
+
+class NationalIndicatorKpiAPIView(CacheControlMixin, APIView):
+    """
+    GET /api/v1/temperature/national-indicator/kpi
+    Retourne les jours de pic chaud ou froid sur une période donnée.
+    Un pic = jour où l'ITN dépasse la moyenne ± écart-type de la baseline 1991-2020.
+    """
+
+    authentication_classes = []
+    permission_classes = []
+    cache_profile = "by_date_end"
+
+    def get(self, request):
+        q = NationalIndicatorKpiQuerySerializer(data=request.query_params)
+        if not q.is_valid():
+            return Response(
+                ErrorSerializer.build(
+                    code="INVALID_PARAMETER",
+                    message="Paramètre invalide ou manquant",
+                    details=q.errors,
+                ),
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        params = q.validated_data
+        kpi_data_source = ITNKpiDependencyProvider.get_dep()
+
+        result = get_national_indicator_kpi(
+            kpi_data_source=kpi_data_source,
+            date_start=params["date_start"],
+            date_end=params["date_end"],
+        )
+
+        def period_payload(stats):
+            return {
+                "hot_peak_count": stats.hot_peak_count,
+                "cold_peak_count": stats.cold_peak_count,
+                "days_above_baseline": stats.days_above_baseline,
+                "days_below_baseline": stats.days_below_baseline,
+                "itn_mean": stats.itn_mean,
+                "deviation_from_normal": stats.deviation_from_normal,
+            }
+
+        payload = {
+            **period_payload(result.current),
+            "previous": period_payload(result.previous),
+        }
+
+        out = NationalIndicatorKpiResponseSerializer(data=payload)
+        out.is_valid(raise_exception=True)
+
+        return Response(out.data, status=status.HTTP_200_OK)
+
+
+class RecordsGraphAPIView(CacheControlMixin, APIView):
+    """
+    GET /api/v1/temperature/records/graph
+    Retourne les records de température battus : compte par bucket (histogramme)
+    et liste des records individuels (scatter plot).
+    """
+
+    authentication_classes = []
+    permission_classes = []
+    # `date_end` est requis ici (le fallback ne se déclenche jamais).
+    cache_profile = "by_date_end"
+
+    def get(self, request):
+        q = RecordsGraphQuerySerializer(data=request.query_params)
+        if not q.is_valid():
+            return Response(
+                ErrorSerializer.build(
+                    code="INVALID_PARAMETER",
+                    message="Paramètre invalide ou manquant",
+                    details=q.errors,
+                ),
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        params = q.validated_data
+        ds = RecordsGraphDependencyProvider.get_dep()
+
+        req = RecordsGraphRequest(
+            date_start=params["date_start"],
+            date_end=params["date_end"],
+            granularity=params["granularity"],
+            period_type=params["period_type"],
+            type_records=params["type_records"],
+            month=params.get("month"),
+            season=params.get("season"),
+            territoire=params.get("territoire"),
+            territoire_id=params.get("territoire_id"),
+        )
+
+        try:
+            result = get_records_graph(request=req, data_source=ds)
+        except ValueError as exc:
+            return Response(
+                ErrorSerializer.build(
+                    code="INVALID_PARAMETER",
+                    message=str(exc),
+                ),
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        serializer = RecordsGraphResponseSerializer(
+            {
+                "buckets": [
+                    {"bucket": b.bucket, "nb_records_battus": b.nb_records_battus}
+                    for b in result.buckets
+                ],
+                "records": [
+                    {
+                        "date": r.date,
+                        "station_id": r.station_id,
+                        "station_name": r.station_name,
+                        "department": r.department,
+                        "type_records": r.type_records,
+                        "valeur": r.valeur,
+                    }
+                    for r in result.records
+                ],
+            }
+        )
+        return Response(serializer.data, status=status.HTTP_200_OK)
+
+
+class AbsoluteRecordsGraphAPIView(CacheControlMixin, APIView):
+    """
+    GET /api/v1/temperature/records/absolute/graph
+    Retourne les records de température absolus : compte par bucket (histogramme)
+    et liste des records individuels (scatter plot).
+    """
+
+    authentication_classes = []
+    permission_classes = []
+    cache_profile = "by_date_end"
+
+    def get(self, request):
+        q = RecordsGraphQuerySerializer(data=request.query_params)
+        if not q.is_valid():
+            return Response(
+                ErrorSerializer.build(
+                    code="INVALID_PARAMETER",
+                    message="Paramètre invalide ou manquant",
+                    details=q.errors,
+                ),
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        params = q.validated_data
+        ds = TemperatureAbsoluteRecordsGraphDependencyProvider.get_dep()
+
+        req = RecordsGraphRequest(
+            date_start=params["date_start"],
+            date_end=params["date_end"],
+            granularity=params["granularity"],
+            period_type=params["period_type"],
+            type_records=params["type_records"],
+            month=params.get("month"),
+            season=params.get("season"),
+            territoire=params.get("territoire"),
+            territoire_id=params.get("territoire_id"),
+        )
+
+        try:
+            result = get_absolute_records_graph(request=req, data_source=ds)
+        except ValueError as exc:
+            return Response(
+                ErrorSerializer.build(
+                    code="INVALID_PARAMETER",
+                    message=str(exc),
+                ),
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        serializer = AbsoluteRecordsGraphResponseSerializer(
+            {
+                "buckets": [
+                    {
+                        "bucket": b.bucket,
+                        "nb_records_absolus": b.nb_records_absolus,
+                    }
+                    for b in result.buckets
+                ],
+                "records": [
+                    {
+                        "date": r.date,
+                        "station_id": r.station_id,
+                        "station_name": r.station_name,
+                        "department": r.department,
+                        "type_records": r.type_records,
+                        "valeur": r.valeur,
+                    }
+                    for r in result.records
+                ],
+            }
+        )
+        return Response(serializer.data, status=status.HTTP_200_OK)

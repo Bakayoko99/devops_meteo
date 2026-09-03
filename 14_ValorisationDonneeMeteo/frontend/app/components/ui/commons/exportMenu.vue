@@ -1,0 +1,184 @@
+<script setup lang="ts">
+import type { DropdownMenuItem } from "@nuxt/ui";
+import type { SelectBarAdapter } from "./selectBar/types";
+import { useMapColors } from "~/constants/colors";
+import langFR from "~/i18n/langFR.js";
+
+const mapColors = useMapColors();
+const colorMode = useColorMode();
+
+const adapter = inject<SelectBarAdapter>("selectBarAdapter")!;
+const { exportConfig, chartRef, granularity, pickedDateStart, pickedDateEnd } =
+    adapter;
+
+const exportMenuItems = ref<DropdownMenuItem[]>([
+    {
+        label: "Format PNG",
+        icon: "i-lucide-file-image",
+        onSelect(e: Event) {
+            e.preventDefault();
+            exportAsPng();
+        },
+    },
+    {
+        label: "Format PNG sans fond",
+        icon: "i-lucide-file-image",
+        onSelect(e: Event) {
+            e.preventDefault();
+            exportAsPngWithoutBackground();
+        },
+    },
+    {
+        label: "Format CSV",
+        icon: "i-lucide-file-spreadsheet",
+        onSelect(e: Event) {
+            e.preventDefault();
+            exportAsCSV();
+        },
+    },
+    {
+        label: "Format HTML",
+        icon: "i-lucide-file-code",
+        onSelect(e: Event) {
+            e.preventDefault();
+            exportAsHTML();
+        },
+    },
+]);
+
+function exportAsPng() {
+    if (!import.meta.client) return;
+    if (!chartRef?.value) return;
+    const dataURL = chartRef.value.getDataURL({
+        type: "png",
+        pixelRatio: 2,
+        backgroundColor: mapColors.value.background,
+        excludeComponents: ["dataZoom"],
+    });
+
+    const a = document.createElement("a");
+    a.href = dataURL;
+    a.download = useFormatFileName(
+        exportConfig.chartName,
+        granularity.value,
+        "png",
+        pickedDateStart.value,
+        pickedDateEnd.value,
+    );
+    a.click();
+}
+
+function exportAsPngWithoutBackground() {
+    if (!import.meta.client) return;
+    if (!chartRef?.value) return;
+    const dataURL = chartRef.value.getDataURL({
+        type: "png",
+        pixelRatio: 2,
+        backgroundColor: "transparent",
+        excludeComponents: ["dataZoom"],
+    });
+
+    const a = document.createElement("a");
+    a.href = dataURL;
+    a.download = useFormatFileName(
+        exportConfig.chartName,
+        granularity.value,
+        "png",
+        pickedDateStart.value,
+        pickedDateEnd.value,
+    );
+    a.click();
+}
+
+function exportAsCSV() {
+    if (!import.meta.client) return;
+    if (exportConfig.onExportCsv) {
+        exportConfig.onExportCsv();
+        return;
+    }
+    const source = exportConfig.getCsvRows();
+    if (!source) return;
+    const headers = exportConfig.csvHeaders;
+    const rows = source.map((row) => Object.values(row).join(",")).join("\n");
+    const csv = `${headers}\n${rows}`;
+
+    downloadCSV(
+        csv,
+        useFormatFileName(
+            exportConfig.chartName,
+            granularity.value,
+            "csv",
+            pickedDateStart.value,
+            pickedDateEnd.value,
+        ),
+    );
+}
+
+function exportAsHTML() {
+    if (!import.meta.client) return;
+    if (!chartRef?.value) return;
+    const options = chartRef.value.getOption();
+    // JSON.stringify supprime les fonctions : on évalue min/max avant sérialisation
+    // pour que l'export HTML ait les mêmes bornes d'axe que le graphe interactif.
+    if (Array.isArray(options.xAxis)) {
+        (options.xAxis as { min?: unknown; max?: unknown }[]).forEach(
+            (axis) => {
+                if (typeof axis.min === "function") axis.min = axis.min();
+                if (typeof axis.max === "function") axis.max = axis.max();
+            },
+        );
+    }
+    const scriptTag = "script";
+    const tooltipFormatterScript = exportConfig.htmlTooltipFormatter
+        ? `[options.tooltip].flat().filter(Boolean).forEach(function(t){ t.formatter = ${exportConfig.htmlTooltipFormatter}; });`
+        : `chart.setOption({ tooltip: { valueFormatter: function(v) { return typeof v === 'number' ? v.toFixed(1) : v; } } });`;
+    const html = `<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>${exportConfig.chartName.toUpperCase()}</title>
+    <${scriptTag} src="https://cdn.jsdelivr.net/npm/echarts/dist/echarts.min.js"></${scriptTag}>
+    <style>html { background-color: ${colorMode.value === "dark" ? "#1a2130" : "#fff"}; margin: 0; padding: 0; width: 100%; height: 100vh; }, body {  display: flex; align-items: center; margin: 0; padding: 0; width: 100%; height: 100vh; } #chart { margin: 20px; width: auto; height: calc(100vh - 40px); }</style>
+</head>
+<body>
+    <div id="chart"></div>
+    <${scriptTag}>
+        echarts.registerLocale('FR', ${JSON.stringify(langFR)});
+        const chart = echarts.init(document.getElementById('chart'), null, { locale: 'FR' });
+        const options = ${JSON.stringify(options)};
+        ${tooltipFormatterScript}
+        chart.setOption(options);
+        window.addEventListener('resize', () => chart.resize());
+    </${scriptTag}>
+</body>
+</html>`;
+
+    const a = document.createElement("a");
+    a.href = `data:text/html;charset=utf-8,${encodeURIComponent(html)}`;
+    a.download = useFormatFileName(
+        exportConfig.chartName,
+        granularity.value,
+        "html",
+        pickedDateStart.value,
+        pickedDateEnd.value,
+    );
+    a.click();
+}
+</script>
+
+<template>
+    <UDropdownMenu
+        :items="exportMenuItems"
+        :ui="{}"
+        :content="{
+            align: 'start',
+            side: 'bottom',
+        }"
+    >
+        <UButton
+            label="Exporter"
+            icon="i-lucide-download"
+            :ui="{ base: 'bg-slate-450 ring-1 ring-blue-350 text-white' }"
+        />
+    </UDropdownMenu>
+</template>

@@ -1,0 +1,148 @@
+// https://nuxt.com/docs/api/configuration/nuxt-config
+export default defineNuxtConfig({
+    // Enable SSR to improve loading time and SEO.
+    // For more info: https://nuxt.com/docs/4.x/guide/concepts/rendering#client-side-rendering.
+    ssr: true,
+    compatibilityDate: "2025-07-15",
+    devtools: { enabled: true }, // false for production
+
+    modules: [
+        "@nuxt/eslint",
+        "@nuxt/test-utils",
+        "@nuxt/test-utils/module",
+        "@nuxt/ui",
+        "@nuxt/image",
+        "@nuxt/fonts",
+        "@nuxt/icon",
+        "@nuxtjs/color-mode",
+        "nuxt-echarts",
+        "@pinia/nuxt",
+        "@primevue/nuxt-module",
+        "nuxt-maplibre",
+    ],
+    maplibre: {
+        css: false,
+    },
+    runtimeConfig: {
+        public: {
+            apiBase: "", // api url will be injected when the container is launched with an env variable
+        },
+    },
+    css: ["~/assets/css/main.css"],
+    colorMode: {
+        preference: "light", // default value of $colorMode.preference
+        fallback: "light", // fallback value if not system preference found
+        globalName: "__NUXT_COLOR_MODE__",
+        classPrefix: "",
+        classSuffix: "",
+        storage: "sessionStorage", // or 'sessionStorage' or 'cookie'
+        storageKey: "nuxt-color-mode",
+    },
+    ui: {
+        colorMode: true,
+    },
+    fonts: {
+        provider: "google",
+    },
+    typescript: {
+        typeCheck: false, // turn to true when calm and ready
+    },
+    app: {
+        head: {
+            title: "DataClimat - Dashboard",
+            htmlAttrs: {
+                lang: "fr",
+            },
+            meta: [
+                {
+                    name: "viewport",
+                    content: "width=device-width, initial-scale=1",
+                },
+            ],
+            link: [
+                { rel: "icon", type: "image/x-icon", href: "/favicon.ico" },
+                {
+                    rel: "stylesheet",
+                    href: "https://unpkg.com/maplibre-gl@5.18.0/dist/maplibre-gl.css",
+                },
+            ],
+        },
+    },
+    echarts: {
+        renderer: ["svg", "canvas"],
+        charts: ["BarChart", "LineChart", "ScatterChart"],
+        components: [
+            "DatasetComponent",
+            "GridComponent",
+            "TooltipComponent",
+            "TitleComponent",
+            "LegendComponent",
+            "DataZoomComponent",
+        ],
+        features: ["LabelLayout", "UniversalTransition"],
+    },
+    primevue: {
+        options: {
+            locale: {
+                monthNames: [
+                    "Janvier",
+                    "Février",
+                    "Mars",
+                    "Avril",
+                    "Mai",
+                    "Juin",
+                    "Juillet",
+                    "Août",
+                    "Septembre",
+                    "Octobre",
+                    "Novembre",
+                    "Décembre",
+                ],
+                monthNamesShort: [
+                    "Jan",
+                    "Fev",
+                    "Mar",
+                    "Avr",
+                    "Mai",
+                    "Jui",
+                    "Juil",
+                    "Aou",
+                    "Sept",
+                    "Oct",
+                    "Nov",
+                    "Dec",
+                ],
+                dayNames: [
+                    "Dimanche",
+                    "Lundi",
+                    "Mardi",
+                    "Mercredi",
+                    "Jeudi",
+                    "Vendredi",
+                    "Samedi",
+                ],
+                dayNamesShort: [
+                    "Dim",
+                    "Lun",
+                    "Mar",
+                    "Mer",
+                    "Jeu",
+                    "Ven",
+                    "Sam",
+                ],
+                dayNamesMin: ["Di", "Lu", "Ma", "Me", "Je", "Ve", "Sa"],
+                fileSizeTypes: [
+                    "B",
+                    "KB",
+                    "MB",
+                    "GB",
+                    "TB",
+                    "PB",
+                    "EB",
+                    "ZB",
+                    "YB",
+                ],
+            },
+        },
+    },
+});
