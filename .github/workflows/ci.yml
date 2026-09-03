@@ -26,7 +26,7 @@ jobs:
           python-version: '3.12'
 
       - name: Install Backend dependencies
-        working-directory: ./backend
+        working-directory: ./14_ValorisationDonneeMeteo/backend
         run: |
           pip install uv
           uv venv
@@ -34,13 +34,13 @@ jobs:
           uv sync
 
       - name: Run Backend linter
-        working-directory: ./backend
+        working-directory: ./14_ValorisationDonneeMeteo/backend
         run: |
           source .venv/bin/activate
           uv run ruff check . || echo "Linter failed but continuing"
 
       - name: Run Backend tests
-        working-directory: ./backend
+        working-directory: ./14_ValorisationDonneeMeteo/backend
         run: |
           source .venv/bin/activate
           uv run pytest weather/tests/unit --junitxml=test-report.xml
@@ -52,15 +52,15 @@ jobs:
           node-version: '24'
 
       - name: Install Frontend dependencies
-        working-directory: ./frontend
+        working-directory: ./14_ValorisationDonneeMeteo/frontend
         run: npm install
 
       - name: Run Frontend linter
-        working-directory: ./frontend
+        working-directory: ./14_ValorisationDonneeMeteo/frontend
         run: npm run lint --if-present
 
       - name: Run Frontend tests
-        working-directory: ./frontend
+        working-directory: ./14_ValorisationDonneeMeteo/frontend
         run: npm run test:unit --if-present
 
       # Security Scan
@@ -73,11 +73,11 @@ jobs:
 
       # Docker build & Trivy scan
       - name: Build Backend Docker Image
-        working-directory: ./backend
+        working-directory: ./14_ValorisationDonneeMeteo/backend
         run: docker build -t myapp-backend:latest .
 
       - name: Build Frontend Docker Image
-        working-directory: ./frontend
+        working-directory: ./14_ValorisationDonneeMeteo/frontend
         run: docker build -t myapp-frontend:latest .
 
       - name: Run Trivy scanner
@@ -120,7 +120,7 @@ jobs:
         with:
           name: project-deliverables
           path: |
-            backend/test-report.xml
+            14_ValorisationDonneeMeteo/backend/test-report.xml
             scorecard-results.sarif
             trivy-backend-vex.json
           retention-days: 14
